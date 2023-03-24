@@ -1,0 +1,14 @@
+[Unit]
+Description=Google Drive Sync Service
+After=network.target
+
+[Service]
+User=your_username
+WorkingDirectory=/path/to/script/directory
+ExecStart=/usr/bin/python3 /path/to/script/google_drive_sync.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

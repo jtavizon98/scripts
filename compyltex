@@ -1,0 +1,21 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+import sys
+import subprocess
+import re
+
+if len(sys.argv) > 2:
+    raise NotImplementedError("Support for only one file")
+
+file = sys.argv[-1]
+if not re.match(r"[/a-zA-Z0-9._/-]*\.tex", file):
+    raise NameError("File must be a .tex")
+
+biber_arg = file.replace(".tex", "")
+
+subprocess.check_call(['pdflatex', '-shell-escape', '-interaction=nonstopmode', file])
+subprocess.check_call(['biber', '-nolog', biber_arg])
+subprocess.check_call(['pdflatex', '-shell-escape', '-interaction=nonstopmode', file])
+subprocess.check_call(['pdflatex', '-shell-escape', '-interaction=nonstopmode', file])
+subprocess.check_call(['latexmk', '-c', file ])
+

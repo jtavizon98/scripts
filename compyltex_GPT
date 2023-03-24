@@ -1,0 +1,14 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+import argparse
+import subprocess
+
+parser = argparse.ArgumentParser(description='Compile a LaTeX document using pdflatex and biber')
+parser.add_argument('file', help='path to the .tex file')
+args = parser.parse_args()
+
+if not args.file.endswith('.tex'):
+    raise NameError('File must be a .tex')
+
+subprocess.check_call(['latexmk', '-pdf', '-interaction=nonstopmode', args.file])
+
