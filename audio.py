@@ -9,14 +9,15 @@ diff = 5
 def getStatus():
     command = subprocess.run(f"wpctl get-volume @DEFAULT_AUDIO_SINK@",
                          capture_output=True, text=True, shell=True)
-    volume  = re.search(r" 0.([0-9]+)", command.stdout).group(1)
     capture = re.search(r"(\[[A-Z]+\])", command.stdout)
     try:
         if capture.group(1) == "[MUTED]":
             muteflag = True
     except AttributeError:
         muteflag = False
-    return int(volume), muteflag
+    volume  = float(re.search(r" ([012]\.[0-9]+)", command.stdout).group(1))
+    volume = int(volume*1e2)
+    return volume, muteflag
 def notifyVolume(volume, muteflag=False):
     # Play volume change sound
     subprocess.run(

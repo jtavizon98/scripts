@@ -4,9 +4,9 @@ import subprocess
 import audio
 
 current_volume, mute = audio.getStatus()
-if (audio.max_volume-audio.diff)<current_volume:
+if audio.max_volume <= (current_volume + audio.diff):
     subprocess.run(
-        f"wpctl set-volume @DEFAULT_AUDIO_SINK@ 100%+",
+        f"wpctl set-volume @DEFAULT_AUDIO_SINK@ 100%",
         shell=True
     )
     current_volume = audio.max_volume
