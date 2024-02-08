@@ -1,0 +1,86 @@
+#!/bin/python3
+import argparse
+import subprocess
+
+known_hosts = {
+    "e18": {
+        "mynas": "/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon/",
+        "datadir": "/nfs/mds/data/compass/hadron/2012/mDST/filtered/",
+        "home": "/nfs/mnemosyne/user/ge82kig/private/",
+        "momos": "/nfs/momos/user/jtavizon/",
+        "tmp": "/nfs/momos/tmp/ge82kig/",
+    },
+    "cip": {"home": "/home/stud/ge82kig/", "scratch": "/scratch/ge82kig/"},
+}
+
+
+def send_file(local_path, remote_path, host_alias):
+    try:
+        subprocess.run(["scp", local_path, f"{host_alias}:{remote_path}"], check=True)
+        print(f"Succesfull transfer: '{local_path}' -> '{host_alias}:{remote_path}'")
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+
+
+def get_file(remote_path, local_path, host_alias):
+    try:
+        subprocess.run(["scp", f"{host_alias}:{remote_path}", local_path], check=True)
+        print(f"Succesfull transfer: '{host_alias}:{remote_path}' -> '{local_path}'")
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+
+
+def mount_sshfs(remote_path, local_path, host_alias):
+    try:
+        subprocess.run(["sshfs", f"{host_alias}:{remote_path}", local_path], check=True)
+        print(f"Mounted '{host_alias}:{remote_path}' to '{local_path}' successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+
+
+def unmount_sshfs(local_path):
+    try:
+        subprocess.run(["fusermount3", "-u", local_path], check=True)
+        print(f"Unmounted '{local_path}' successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="File Transfer and SSHFS Script")
+    parser.add_argument(
+        "mode",
+        choices=["send", "get", "bring", "drop"],
+        help="Operation mode",
+    )
+    parser.add_argument(
+        "-a", "--host_alias", required=True, help="Alias defined in the SSH config"
+    )
+    parser.add_argument("-d", "--directory", help="Directory inside known hosts.")
+    parser.add_argument(
+        "-l", "--local_path", required=True, help="Local file path or mount point"
+    )
+    parser.add_argument("-r", "--remote_path", help="Remote file path (for send/get)")
+
+    args = parser.parse_args()
+
+    remote_path = 0
+
+    if args.host_alias in known_hosts:
+        if args.directory is not None:
+            remote_path = known_hosts[args.host_alias][args.directory]
+    else:
+        remote_path = args.remote_path
+
+    if args.mode == "send":
+        send_file(args.local_path, remote_path, args.host_alias)
+    elif args.mode == "get":
+        get_file(remote_path, args.local_path, args.host_alias)
+    elif args.mode == "bring":
+        mount_sshfs(remote_path, args.local_path, args.host_alias)
+    elif args.mode == "drop":
+        unmount_sshfs(args.local_path)
+
+
+if __name__ == "__main__":
+    main()
