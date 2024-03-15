@@ -1,5 +1,6 @@
 #!/bin/python3
 import argparse
+import os
 import subprocess
 
 known_hosts = {
@@ -11,6 +12,7 @@ known_hosts = {
         "tmp": "/nfs/momos/tmp/ge82kig/",
     },
     "cip": {"home": "/home/stud/ge82kig/", "scratch": "/scratch/ge82kig/"},
+    "home": {"home": "/home/jairot/", "root": "/"},
 }
 
 
@@ -38,6 +40,29 @@ def mount_sshfs(remote_path, local_path, host_alias):
         print(f"Error: {e}")
 
 
+def detect_sshfs_mounts():
+    try:
+        # Run the df command to get filesystem information
+        df_output = subprocess.check_output(["df", "-h"], text=True)
+        lines = df_output.splitlines()
+
+        # Skip the header line
+        mounted_filesystems = [(line.split()[-1], line) for line in lines]
+
+        # Filter out only SSHFS mounts
+        sshfs_mounts = []
+        known_hosts_keys = known_hosts.keys()
+        for mount, line in mounted_filesystems:
+            if any(f"{host}:" in line for host in known_hosts_keys):
+                sshfs_mounts.append(mount)
+
+        return sshfs_mounts
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing df command: {e}")
+        return []
+
+
 def unmount_sshfs(local_path):
     try:
         subprocess.run(["fusermount3", "-u", local_path], check=True)
@@ -54,21 +79,32 @@ def main():
         help="Operation mode",
     )
     parser.add_argument(
-        "-a", "--host_alias", required=True, help="Alias defined in the SSH config"
+        "-a", "--host_alias", required=False, help="Alias defined in the SSH config"
     )
     parser.add_argument("-d", "--directory", help="Directory inside known hosts.")
     parser.add_argument(
-        "-l", "--local_path", required=True, help="Local file path or mount point"
+        "-l", "--local_path", required=False, help="Local file path or mount point"
     )
     parser.add_argument("-r", "--remote_path", help="Remote file path (for send/get)")
 
     args = parser.parse_args()
 
-    remote_path = 0
+    remote_path = None
+
+    if args.mode == "drop":
+        if args.local_path is not None:
+            unmount_sshfs(args.local_path)
+        else:
+            sshfs_mounts = detect_sshfs_mounts()
+            for mount in sshfs_mounts:
+                unmount_sshfs(mount)
 
     if args.host_alias in known_hosts:
         if args.directory is not None:
             remote_path = known_hosts[args.host_alias][args.directory]
+        else:
+            directory = os.path.basename(args.local_path)
+            remote_path = known_hosts[args.host_alias][directory]
     else:
         remote_path = args.remote_path
 
@@ -78,8 +114,6 @@ def main():
         get_file(remote_path, args.local_path, args.host_alias)
     elif args.mode == "bring":
         mount_sshfs(remote_path, args.local_path, args.host_alias)
-    elif args.mode == "drop":
-        unmount_sshfs(args.local_path)
 
 
 if __name__ == "__main__":
