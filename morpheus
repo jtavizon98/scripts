@@ -1,0 +1,370 @@
+#!/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon/software/myenv/bin/python
+
+import argparse
+import concurrent.futures
+import os
+import re
+import subprocess
+from datetime import datetime
+
+import batchelor
+from paths import paths
+from tqdm.contrib.concurrent import process_map
+
+mc_path = os.path.join(paths["mynas"], "MC_chain")
+mc_momos_path = os.path.join(paths["momos"], "MC")
+software_path = os.path.join(paths["mynas"], "software")
+tgeant_path = os.path.join(software_path, "TGEANT/install/bin")
+coral_path = os.path.join(software_path, "phast-7.148/coral")
+
+environment = [
+    "export MYNAS=/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon",
+    "export COMPASS_FILES=/nfs/freenas/tuph/e18/project/compass/detector",
+    "export BEAMFILES=$MYNAS/MC_chain/beamfiles",
+    "source scl_source enable python27",
+    ". prepare_root 6.24.06",
+    "source $MYNAS/software/geant/geant4-10.5.1/install/bin/geant4.sh",
+    "source $MYNAS/software/TGEANT/install/thisgeant.sh",
+    "export CORAL_LOCATION=$MYNAS/software/coral",
+    "source $CORAL_LOCATION/coral.sh",
+    "source $CORAL_LOCATION/setup.sh",
+]
+
+environment = [line + " && " for line in environment]
+
+
+def run_multiprocess(function, file_map, desc, unit, output_path):
+    num_threads = os.cpu_count()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        results = list(
+            process_map(
+                function,
+                file_map,
+                total=len(file_map),
+                desc=desc,
+                unit=unit,
+            )
+        )
+
+    timestamps = [result[0] for result in results]
+    outputs = [result[1] for result in results]
+    for i, file in enumerate(file_map):
+        process_name = os.path.basename(file)
+        timestamp = timestamps[i]
+        command_output = outputs[i]
+        write_log(
+            f"{function.__name__}-{process_name}",
+            timestamp,
+            command_output,
+            output_path,
+        )
+
+
+def write_log(process, timestamp, command_output, output_path):
+    log_file = os.path.join(output_path, ".log", timestamp + f"{process}.log")
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(command_output)
+
+
+def run_command_for_multiprocess_mapping(command_for_file, file):
+    command = f"{command_for_file} {file}"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    result = subprocess.run(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        universal_newlines=True,
+    )
+    command_output = result.stdout
+    result = [timestamp, command_output]
+    return result
+
+
+def run_batchelor(iterable, command_on_item, config_file, output_path, job_name):
+    bh = batchelor.BatchelorHandler(configfile=config_file, check_job_success=True)
+    bh.collectJobsIfPossible()
+    log_path = os.path.join(output_path, ".log")
+    for i, item in enumerate(iterable):
+        job_id = f"{job_name}_{i+1}"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        log_file = os.path.join(log_path, f"{timestamp}_{job_id}.log")
+        if not os.path.exists(log_file):
+            with open(log_file, "w", encoding="utf-8") as f:
+                pass
+        command = [
+            "echo 'Start: ' $(date) && ",
+            "echo 'Host: ' $(hostname) && ",
+            "echo 'User: ' $(whoami) && ",
+            f"{command_on_item} {item} && ",
+            "echo 'End: '$(date)",
+        ]
+        command = "".join(command)
+        bh.submitJob(command, output=log_file, jobName=job_name)
+    bh.submitCollectedJobsInArray(jobName=f"{job_name}")
+    bh.wait()
+    bh.checkJobStates()
+
+
+def edit_template_file(file_path, edits_list: list, encoding="utf-8"):
+    with open(file_path, "r", encoding=encoding) as template_file:
+        content = template_file.read()
+
+    for edit_key, edit_value in edits_list:
+        content = re.sub(edit_key, edit_value, content)
+    return content
+
+
+def count_events(filepath):
+    with open(filepath, "r", encoding="ascii") as file:
+        content = file.read()
+        num_events = content.count("-------------------------------------")
+    return num_events
+
+
+def generate_xml_files(
+    run_name,
+    directory,
+    xml_template_path,
+    xml_output_path,
+    tgeant_out_path,
+    Gflash=False,
+):
+    files = os.listdir(directory)
+
+    xml_files = []
+
+    for filename in files:
+        filepath = os.path.join(directory, filename)
+        num_events = count_events(filepath)
+
+        xml_edits = [
+            (
+                "<outputPath>.*</outputPath>",
+                f"<outputPath>{tgeant_out_path}</outputPath>",
+            ),
+            (
+                "<localGeneratorFile>.*</localGeneratorFile>",
+                f"<localGeneratorFile>{os.path.join(mc_momos_path, filepath)}</localGeneratorFile>",
+            ),
+            (
+                "<numParticles>.*</numParticles>",
+                f"<numParticles>{num_events}</numParticles>",
+            ),
+        ]
+
+        if Gflash:
+            filename_without_extension = filename.split(".")[0]
+            num_id = filename_without_extension.split("_")[-1]
+
+            gflash_edits = [
+                (
+                    "<runName>.*</runName>",
+                    f"<runName>{run_name}_Gflash_{num_id}</runName>",
+                ),
+                (
+                    "<useGflash>.*</useGflash>",
+                    "<useGflash>true</useGflash>",
+                ),
+            ]
+            xml_edits.extend(gflash_edits)
+        else:
+            xml_edits.append(
+                (
+                    "<runName>.*</runName>",
+                    f"<runName>{filename.split('.')[0]}</runName>",
+                )
+            )
+
+        xml_content = edit_template_file(xml_template_path, xml_edits, encoding="utf-8")
+
+        xml_output_filename = os.path.join(
+            xml_output_path, f"{filename.split('.')[0]}.xml"
+        )
+        with open(xml_output_filename, "w", encoding="utf-8") as output_file:
+            output_file.write(xml_content)
+        print(f"Created file: {xml_output_filename}")
+        xml_files.append(xml_output_filename)
+    return xml_files
+
+
+def run_TGEANT(file):
+    return run_command_for_multiprocess_mapping("TGEANT", file)
+
+
+def simulate_with_TGEANT(files, output_path, batch=False):
+    if batch:
+        print("\n--> TGEANT batch...\n")
+
+        command = environment
+        command.append(f"{os.path.join(tgeant_path, 'TGEANT')}")
+        command = "".join(command)
+
+        config_file = os.path.join(paths["home"], ".batchelorrc_short")
+        run_batchelor(
+            files,
+            command,
+            config_file,
+            output_path,
+            "mc_TG4",
+        )
+    else:
+        run_multiprocess(
+            run_TGEANT,
+            files,
+            desc="Simulating events with TGEANT",
+            unit="ascii file",
+            output_path=output_path,
+        )
+
+
+def get_files_matching_pattern(directory, pattern):
+    file_paths = []
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+
+        match = re.search(pattern, filename)
+        if match:
+            file_paths.append(file_path)
+    return file_paths
+
+
+def generate_trafdict_files(
+    run_name, input_path, trafdict_template, output_path, coral_output_path
+):
+    files = get_files_matching_pattern(input_path, run_name)
+
+    trafdict_files = []
+    for file in files:
+        file_id = os.path.basename(file).split(".")[0]
+
+        trafdict_edits = [
+            (
+                "mDST file		.*",
+                "mDST file		"
+                + f"{os.path.join(coral_output_path, 'mDST-phast-mc')}-{file_id}.root",
+            ),
+            (
+                "histograms home		.*",
+                "histograms home		"
+                + f"{os.path.join(coral_output_path, 'mDST-hist-mc')}-{file_id}.root",
+            ),
+            (
+                r"CsTGEANTFile file	.*",
+                f"CsTGEANTFile file	{file}",
+            ),
+            (
+                r"Monte Carlo file	.*",
+                f"Monte Carlo file	{file}",
+            ),
+        ]
+
+        trafdict_content = edit_template_file(
+            trafdict_template, trafdict_edits, encoding="utf-8"
+        )
+
+        trafdict_output_filename = os.path.join(output_path, f"mc-{file_id}.opt")
+        with open(trafdict_output_filename, "w", encoding="utf-8") as output_file:
+            output_file.write(trafdict_content)
+        print(f"Created file: {trafdict_output_filename}")
+        trafdict_files.append(trafdict_output_filename)
+    return trafdict_files
+
+
+def run_CORAL(file):
+    return run_command_for_multiprocess_mapping("coral.exe", file)
+
+
+def translate_with_CORAL(files, output_path, batch=False):
+    if batch:
+        print("\n--> coral.exe batch...\n")
+
+        command = environment
+        command.append(f"{os.path.join(coral_path, 'coral.exe')}")
+        command = "".join(command)
+
+        config_file = os.path.join(paths["home"], ".batchelorrc_io")
+        run_batchelor(
+            files,
+            command,
+            config_file,
+            output_path,
+            "mc_coral",
+        )
+    else:
+        run_multiprocess(
+            run_CORAL,
+            files,
+            desc="Reconstructing events with coral.exe",
+            unit="tgeant file",
+            output_path=output_path,
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="""Simulate events according to ascii files in a given
+        directory using TGEANT and decoding them using coral.exe
+        """
+    )
+    parser.add_argument(
+        "-b", "--batch", action="store_true", help="Compute using a cluster"
+    )
+    parser.add_argument(
+        "-g", "--Gflash", action="store_true", help="Simulate using Gflash"
+    )
+    parser.add_argument(
+        "-d", "--directory", type=str, help="Directory with ascii files to be simulated"
+    )
+    parser.add_argument(
+        "-x",
+        "--xml_template",
+        type=str,
+        help="xml file to base the TGEANT simulation around",
+    )
+    parser.add_argument(
+        "-t",
+        "--trafdict_template",
+        type=str,
+        help="trafdict file to base the coral.exe decoding around",
+    )
+
+    args = parser.parse_args()
+
+    print("\n======================= Morpheus  ============================\n")
+
+    run_name = os.path.basename(args.directory)
+    print(f"Run name: {run_name}\n")
+
+    xml_momos_path = os.path.join(mc_momos_path, "xml")
+    tgeant_momos_path = os.path.join(mc_momos_path, "tgeant")
+    xml_files = generate_xml_files(
+        run_name,
+        args.directory,
+        args.xml_template,
+        xml_momos_path,
+        tgeant_momos_path,
+        Gflash=args.Gflash,
+    )
+
+    # simulate_with_TGEANT(xml_files, tgeant_momos_path, batch=args.batch)
+
+    trafdict_momos_path = os.path.join(mc_momos_path, "trafdict")
+    coral_momos_path = os.path.join(mc_momos_path, "coral")
+    trafdict_files = generate_trafdict_files(
+        run_name,
+        tgeant_momos_path,
+        args.trafdict_template,
+        trafdict_momos_path,
+        coral_momos_path,
+    )
+
+    coral_momos_path = os.path.join(mc_momos_path, "coral")
+    translate_with_CORAL(trafdict_files, coral_momos_path, batch=args.batch)
+
+    print("\n======================= Morpheus  ============================\n")
+
+
+if __name__ == "__main__":
+    main()
