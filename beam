@@ -1,0 +1,70 @@
+#!/bin/python3
+import argparse
+import glob
+import os
+import subprocess
+import tempfile
+
+from pptx import Presentation
+
+ppi_resolution = 300
+
+
+def pdf_to_pptx(pdf_path, pptx_path):
+    # Create presentation object
+    prs = Presentation()
+    slide_width = prs.slide_width
+    slide_height = prs.slide_height
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Convert PDF to PNGs using pdftocairo
+        try:
+            subprocess.run(
+                [
+                    "pdftocairo",
+                    "-png",
+                    "-r",
+                    f"{ppi_resolution}",
+                    "-transp",
+                    pdf_path,
+                    os.path.join(temp_dir, "slide"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print("Error converting PDF to images:")
+            print(e.stderr.decode())
+            return
+
+        # Collect and sort generated images numerically
+        slide_files = glob.glob(os.path.join(temp_dir, "slide-*.png"))
+        slide_files.sort(
+            key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split("-")[1])
+        )
+
+        # Create slides from images
+        for img_path in slide_files:
+            blank_slide_layout = prs.slide_layouts[6]
+            slide = prs.slides.add_slide(blank_slide_layout)
+            slide.shapes.add_picture(
+                img_path, 0, 0, width=slide_width, height=slide_height
+            )
+
+    prs.save(pptx_path)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert PDF to PowerPoint using pdftocairo"
+    )
+    parser.add_argument("-i", "--input_pdf", required=True, help="Input PDF file path")
+    parser.add_argument("-o", "--output_pptx", help="Output PPTX file path")
+    args = parser.parse_args()
+
+    output_path = args.output_pptx or f"{os.path.splitext(args.input_pdf)[0]}.pptx"
+    pdf_to_pptx(args.input_pdf, output_path)
+
+
+if __name__ == "__main__":
+    main()

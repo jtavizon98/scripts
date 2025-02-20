@@ -6,7 +6,7 @@ import subprocess
 known_hosts = {
     "e18": {
         "mynas": "/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon/",
-        "datadir": "/nfs/mds/data/compass/hadron/2012/mDST/filtered/",
+        "datadir": "/nfs/momos/data/compass/hadron/2012/mDST/filtered/",
         "home": "/nfs/mnemosyne/user/ge82kig/private/",
         "momos": "/nfs/momos/user/jtavizon/",
         "tmp": "/nfs/momos/tmp/ge82kig/",
@@ -103,7 +103,7 @@ def main():
         if args.directory is not None:
             remote_path = known_hosts[args.host_alias][args.directory]
         else:
-            directory = os.path.basename(args.local_path)
+            directory = os.path.basename(args.local_path.rstrip("/"))
             remote_path = known_hosts[args.host_alias][directory]
     else:
         remote_path = args.remote_path

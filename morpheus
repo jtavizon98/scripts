@@ -18,24 +18,22 @@ tgeant_path = os.path.join(software_path, "TGEANT/install/bin")
 coral_path = os.path.join(software_path, "phast-7.148/coral")
 
 environment = [
-    "export MYNAS=/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon",
+    f"export MYNAS={paths['mynas']}",
+    f"export MOMOS={paths['momos']}",
     "export COMPASS_FILES=/nfs/freenas/tuph/e18/project/compass/detector",
-    "export BEAMFILES=$MYNAS/MC_chain/beamfiles",
-    "source scl_source enable python27",
-    ". prepare_root 6.24.06",
-    "source $MYNAS/software/geant/geant4-10.5.1/install/bin/geant4.sh",
+    "export BEAMFILES=$MOMOS/MC/beamfiles",
+    "module load spack gcc/11.4.0 root/6.24.06_py3.9.18_cxx11 clhep/2.4.6.4 cernlib/2023.10.31.0-free",
+    "source $MYNAS/software/geant/geant4-10.5.1/install_alma9/bin/geant4.sh",
     "source $MYNAS/software/TGEANT/install/thisgeant.sh",
     "export CORAL_LOCATION=$MYNAS/software/coral",
     "source $CORAL_LOCATION/coral.sh",
     "source $CORAL_LOCATION/setup.sh",
 ]
 
-environment = [line + " && " for line in environment]
-
 
 def run_multiprocess(function, file_map, desc, unit, output_path):
     num_threads = os.cpu_count()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
         results = list(
             process_map(
                 function,
@@ -45,6 +43,16 @@ def run_multiprocess(function, file_map, desc, unit, output_path):
                 unit=unit,
             )
         )
+
+    failed_files = []
+    for i, (_, _, failed) in enumerate(results):
+        if failed:
+            failed_file_path = file_map[i]
+            failed_files.append(failed_file_path)
+    if len(failed_files) > 0:
+        print("failed_files:\n")
+        for failed_file_path in failed_files:
+            print(f"{failed_file_path}\n")
 
     timestamps = [result[0] for result in results]
     outputs = [result[1] for result in results]
@@ -69,16 +77,24 @@ def write_log(process, timestamp, command_output, output_path):
 def run_command_for_multiprocess_mapping(command_for_file, file):
     command = f"{command_for_file} {file}"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    result = subprocess.run(
-        command,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-        universal_newlines=True,
-    )
-    command_output = result.stdout
-    result = [timestamp, command_output]
+    failed = False
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+        command_output = f"{result.stdout}"
+    except subprocess.CalledProcessError as e:
+        command_output = f"{e.stdout}"
+        failed = True
+    except Exception as e:
+        command_output = str(e)
+        failed = True
+    result = [timestamp, command_output, failed]
     return result
 
 
@@ -94,12 +110,14 @@ def run_batchelor(iterable, command_on_item, config_file, output_path, job_name)
             with open(log_file, "w", encoding="utf-8") as f:
                 pass
         command = [
-            "echo 'Start: ' $(date) && ",
-            "echo 'Host: ' $(hostname) && ",
-            "echo 'User: ' $(whoami) && ",
-            f"{command_on_item} {item} && ",
-            "echo 'End: '$(date)",
+            "echo 'Start: ' $(date)",
+            "echo 'Host: ' $(hostname)",
+            "echo 'User: ' $(whoami)",
         ]
+        command.extend(environment)
+        command.append(f"{command_on_item} {item}")
+        command = [line + " && " for line in command]
+        command.append("echo 'End: '$(date)")
         command = "".join(command)
         bh.submitJob(command, output=log_file, jobName=job_name)
     bh.submitCollectedJobsInArray(jobName=f"{job_name}")
@@ -146,7 +164,7 @@ def generate_xml_files(
             ),
             (
                 "<localGeneratorFile>.*</localGeneratorFile>",
-                f"<localGeneratorFile>{os.path.join(mc_momos_path, filepath)}</localGeneratorFile>",
+                f"<localGeneratorFile>{os.path.join(mc_path, filepath)}</localGeneratorFile>",
             ),
             (
                 "<numParticles>.*</numParticles>",
@@ -184,8 +202,8 @@ def generate_xml_files(
         )
         with open(xml_output_filename, "w", encoding="utf-8") as output_file:
             output_file.write(xml_content)
-        print(f"Created file: {xml_output_filename}")
         xml_files.append(xml_output_filename)
+    print(f"Created {len(xml_files)} files with pattern like {xml_files[0]}")
     return xml_files
 
 
@@ -197,9 +215,7 @@ def simulate_with_TGEANT(files, output_path, batch=False):
     if batch:
         print("\n--> TGEANT batch...\n")
 
-        command = environment
-        command.append(f"{os.path.join(tgeant_path, 'TGEANT')}")
-        command = "".join(command)
+        command = f"{os.path.join(tgeant_path, 'TGEANT')}"
 
         config_file = os.path.join(paths["home"], ".batchelorrc_short")
         run_batchelor(
@@ -207,7 +223,7 @@ def simulate_with_TGEANT(files, output_path, batch=False):
             command,
             config_file,
             output_path,
-            "mc_TG4",
+            "mc_T4",
         )
     else:
         run_multiprocess(
@@ -233,7 +249,7 @@ def get_files_matching_pattern(directory, pattern):
 def generate_trafdict_files(
     run_name, input_path, trafdict_template, output_path, coral_output_path
 ):
-    files = get_files_matching_pattern(input_path, run_name)
+    files = get_files_matching_pattern(input_path, f"{run_name}_")
 
     trafdict_files = []
     for file in files:
@@ -267,8 +283,8 @@ def generate_trafdict_files(
         trafdict_output_filename = os.path.join(output_path, f"mc-{file_id}.opt")
         with open(trafdict_output_filename, "w", encoding="utf-8") as output_file:
             output_file.write(trafdict_content)
-        print(f"Created file: {trafdict_output_filename}")
         trafdict_files.append(trafdict_output_filename)
+    print(f"Created {len(trafdict_files)} files with pattern like {trafdict_files[0]}")
     return trafdict_files
 
 
@@ -280,11 +296,10 @@ def translate_with_CORAL(files, output_path, batch=False):
     if batch:
         print("\n--> coral.exe batch...\n")
 
-        command = environment
-        command.append(f"{os.path.join(coral_path, 'coral.exe')}")
-        command = "".join(command)
+        command = f"{os.path.join(coral_path, 'coral.exe')}"
 
-        config_file = os.path.join(paths["home"], ".batchelorrc_io")
+        # config_file = os.path.join(paths["home"], ".batchelorrc_io")
+        config_file = os.path.join(paths["home"], ".batchelorrc_short")
         run_batchelor(
             files,
             command,
@@ -312,6 +327,9 @@ def main():
         "-b", "--batch", action="store_true", help="Compute using a cluster"
     )
     parser.add_argument(
+        "-n", "--nosim", action="store_true", help="Don't simulate, only reconstruct"
+    )
+    parser.add_argument(
         "-g", "--Gflash", action="store_true", help="Simulate using Gflash"
     )
     parser.add_argument(
@@ -334,21 +352,22 @@ def main():
 
     print("\n======================= Morpheus  ============================\n")
 
-    run_name = os.path.basename(args.directory)
+    run_name = os.path.basename(args.directory.rstrip("/"))
     print(f"Run name: {run_name}\n")
 
-    xml_momos_path = os.path.join(mc_momos_path, "xml")
     tgeant_momos_path = os.path.join(mc_momos_path, "tgeant")
-    xml_files = generate_xml_files(
-        run_name,
-        args.directory,
-        args.xml_template,
-        xml_momos_path,
-        tgeant_momos_path,
-        Gflash=args.Gflash,
-    )
+    if not args.nosim:
+        xml_momos_path = os.path.join(mc_momos_path, "xml")
+        xml_files = generate_xml_files(
+            run_name,
+            args.directory,
+            args.xml_template,
+            xml_momos_path,
+            tgeant_momos_path,
+            Gflash=args.Gflash,
+        )
 
-    # simulate_with_TGEANT(xml_files, tgeant_momos_path, batch=args.batch)
+        simulate_with_TGEANT(xml_files, tgeant_momos_path, batch=args.batch)
 
     trafdict_momos_path = os.path.join(mc_momos_path, "trafdict")
     coral_momos_path = os.path.join(mc_momos_path, "coral")

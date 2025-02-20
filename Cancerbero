@@ -1,0 +1,2 @@
+#!/bin/bash
+swaylock -f -k -l --color 181226f0 --font 'UbuntuMono Nerd Font'
