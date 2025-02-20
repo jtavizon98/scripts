@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+import argparse
+import re
+import subprocess
+
+MAX_VOLUME = 100
+DIFF = 5  # Default volume step size
+
+
+def get_status():
+    """Get current volume and mute status"""
+    result = subprocess.run(
+        "wpctl get-volume @DEFAULT_AUDIO_SINK@",
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout.strip()
+
+    # Parse volume level
+    volume_match = re.search(r"\d+\.?\d*", output)
+    volume = round(float(volume_match.group()) * 100) if volume_match else 0
+
+    # Check mute status
+    muted = "[MUTED]" in output
+    return min(volume, MAX_VOLUME), muted
+
+
+def notify_volume(volume, muted=False):
+    """Play sound and show volume notification"""
+    subprocess.run(
+        'canberra-gtk-play -i audio-volume-change -d "changeVolume"',
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    message = f"󰸈 Volume muted" if muted or volume == 0 else f"󰕾 Volume: {volume}%"
+    subprocess.run(
+        f"dunstify -a volumectl -u low -r 9993 "
+        f'-h int:value:{volume} "{message}" -t 2000',
+        shell=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Control system audio volume",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-i", "--inc", action="store_true", help="Increase volume")
+    group.add_argument("-d", "--dec", action="store_true", help="Decrease volume")
+    group.add_argument(
+        "-s", "--set", type=int, metavar="0-100", help="Set specific volume level"
+    )
+    group.add_argument(
+        "-t", "--toggle-mute", action="store_true", help="Toggle audio mute"
+    )
+
+    args = parser.parse_args()
+
+    try:
+        if args.inc:
+            current, muted = get_status()
+            new_vol = min(current + DIFF, MAX_VOLUME)
+            subprocess.run(
+                f"wpctl set-volume @DEFAULT_AUDIO_SINK@ {new_vol/100:.2f}",
+                shell=True,
+                check=True,
+            )
+
+        elif args.dec:
+            current, muted = get_status()
+            new_vol = max(current - DIFF, 0)
+            subprocess.run(
+                f"wpctl set-volume @DEFAULT_AUDIO_SINK@ {new_vol/100:.2f}",
+                shell=True,
+                check=True,
+            )
+
+        elif args.set is not None:
+            new_vol = max(0, min(args.set, MAX_VOLUME))
+            subprocess.run(
+                f"wpctl set-volume @DEFAULT_AUDIO_SINK@ {new_vol/100:.2f}",
+                shell=True,
+                check=True,
+            )
+
+        elif args.toggle_mute:
+            subprocess.run(
+                "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", shell=True, check=True
+            )
+
+        # Update status and notify
+        final_vol, final_muted = get_status()
+        notify_volume(final_vol, final_muted)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error controlling audio: {e}")
+        exit(1)
+
+
+if __name__ == "__main__":
+    main()

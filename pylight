@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import argparse
+import subprocess
+
+DIFF = 5  # Default brightness step size
+
+
+def get_brightness():
+    """Get current screen brightness percentage"""
+    result = subprocess.run(
+        "xbacklight -get",
+        shell=True,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return int(float(result.stdout.strip()))  # Handle decimal values
+
+
+def notify_brightness(level):
+    """Show desktop notification with brightness level"""
+    subprocess.run(
+        f"dunstify -a xbacklight -u low -r 9994 "
+        f'-h int:value:{level} "󰃟  Brightness: {level}%" -t 2000',
+        shell=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Control screen brightness",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-i", "--inc", action="store_true", help="Increase brightness")
+    group.add_argument("-d", "--dec", action="store_true", help="Decrease brightness")
+    group.add_argument(
+        "-s",
+        "--set",
+        type=int,
+        metavar="N",
+        help="Set specific brightness level (0-100)",
+    )
+
+    args = parser.parse_args()
+
+    if args.inc:
+        # Handle increase
+        subprocess.run(f"xbacklight -inc {DIFF}", shell=True)
+        new_level = get_brightness()
+        if new_level > 100:
+            subprocess.run("xbacklight -set 100", shell=True)
+            new_level = 100
+        notify_brightness(new_level)
+
+    elif args.dec:
+        # Handle decrease with special thresholds
+        current = get_brightness()
+        if current <= DIFF:
+            subprocess.run(f"xbacklight -set {DIFF}", shell=True)
+        else:
+            subprocess.run(f"xbacklight -dec {DIFF}", shell=True)
+
+        new_level = get_brightness()
+        # Special case: Show 0% when below threshold but keep actual level
+        new_level = 0 if new_level < DIFF else new_level
+        notify_brightness(new_level)
+
+    elif args.set is not None:
+        # Handle direct set with validation
+        level = max(0, min(args.set, 100))
+        subprocess.run(f"xbacklight -set {level}", shell=True)
+        notify_brightness(level)
+
+
+if __name__ == "__main__":
+    main()

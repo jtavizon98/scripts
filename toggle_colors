@@ -1,0 +1,115 @@
+#!/bin/python3
+
+import os
+import re
+
+alacritty_light_to_dark = [
+    (
+        r'.*#"~/\.config/alacritty/catppuccin-mocha\.toml"',
+        r'"~/.config/alacritty/catppuccin-mocha.toml"',
+    ),
+    (
+        r'.*"~/\.config/alacritty/catppuccin-latte\.toml"',
+        r'#"~/.config/alacritty/catppuccin-latte.toml"',
+    ),
+    (
+        r"opacity = \d+\.\d+",
+        "opacity = 0.85",
+    ),
+]
+
+alacritty_dark_to_light = [
+    (
+        r'"~/\.config/alacritty/catppuccin-mocha\.toml"',
+        r'#"~/.config/alacritty/catppuccin-mocha.toml"',
+    ),
+    (
+        r'#"~/\.config/alacritty/catppuccin-latte\.toml"',
+        r'"~/.config/alacritty/catppuccin-latte.toml"',
+    ),
+    (
+        r"opacity = \d+\.\d+",
+        "opacity = 0.75",
+    ),
+]
+
+rofi_light_to_dark = [
+    (
+        r'@theme "/home/jairot/\.local/share/rofi/themes/catppuccin-latte\.rasi"',
+        r'@theme "/home/jairot/.local/share/rofi/themes/catppuccin-macchiato.rasi"',
+    )
+]
+
+rofi_dark_to_light = [
+    (
+        r'@theme "/home/jairot/\.local/share/rofi/themes/catppuccin-macchiato\.rasi"',
+        r'@theme "/home/jairot/.local/share/rofi/themes/catppuccin-latte.rasi"',
+    )
+]
+
+nvim_light_to_dark = [
+    (
+        r'flavour = "latte"',
+        r'flavour = "mocha"',
+    )
+]
+
+nvim_dark_to_light = [
+    (
+        r'flavour = "mocha"',
+        r'flavour = "latte"',
+    )
+]
+
+
+config_file_path = "~/.config"
+alacritty_file_path = os.path.join(config_file_path, "alacritty/alacritty.toml")
+rofi_file_path = os.path.join(config_file_path, "rofi/config.rasi")
+nvim_file_path = os.path.join(
+    config_file_path, "nvim/lua/jtavizon/plugins/colorscheme.lua"
+)
+
+
+def edit_template_file(file_path, edits_list: list, encoding="utf-8"):
+    with open(file_path, "r", encoding=encoding) as template_file:
+        content = template_file.read()
+
+    for edit_key, edit_value in edits_list:
+        content = re.sub(edit_key, edit_value, content)
+    return content
+
+
+def main():
+    alacritty_absolute_path = os.path.expanduser(alacritty_file_path)
+    with open(alacritty_absolute_path, "r", encoding="utf-8") as config_file:
+        content = config_file.read()
+
+    light_to_dark_found = re.search(alacritty_light_to_dark[0][0], content)
+
+    file_paths = [
+        alacritty_absolute_path,
+        os.path.expanduser(rofi_file_path),
+        os.path.expanduser(nvim_file_path),
+    ]
+
+    edit_contents = []
+    if light_to_dark_found:
+        edits = [alacritty_light_to_dark, rofi_light_to_dark, nvim_light_to_dark]
+        for edit, file_path in zip(edits, file_paths):
+            edit_contents.append(edit_template_file(file_path, edit))
+        theme = "Catppuccin-Macchiato-Standard-Pink-Dark"
+    else:
+        edits = [alacritty_dark_to_light, rofi_dark_to_light, nvim_dark_to_light]
+        for edit, file_path in zip(edits, file_paths):
+            edit_contents.append(edit_template_file(file_path, edit))
+        theme = "Catppuccin-Latte-Standard-Pink-Light"
+
+    for edited_content, file_path in zip(edit_contents, file_paths):
+        with open(os.path.expanduser(file_path), "w", encoding="utf-8") as config_file:
+            config_file.write(edited_content)
+    os.environ["GTK_THEME"] = theme
+    print(theme)
+
+
+if __name__ == "__main__":
+    main()

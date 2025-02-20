@@ -1,0 +1,447 @@
+#!/nfs/freenas/tuph/e18/project/compass/analysis/jtavizon/software/myenv/bin/python
+
+import argparse
+import concurrent.futures
+import os
+import re
+import subprocess
+from datetime import datetime
+
+import batchelor
+from paths import paths
+from tqdm.contrib.concurrent import process_map
+
+phast_dir = os.path.join(paths["mynas"], "software/phast")
+ue_path = os.path.join(paths["mynas"], "user-events")
+rd_output_path = os.path.join(paths["momos"], "RD")
+rd_list_path = os.path.join(rd_output_path, "lst")
+
+mc_momos_path = os.path.join(paths["momos"], "MC")
+mc_input_path = os.path.join(mc_momos_path, "coral")
+mc_output_path = os.path.join(mc_momos_path, "phast")
+mc_list_path = os.path.join(mc_momos_path, "lst")
+
+
+environment = [
+    "module load spack gcc/11.4.0 root/6.24.06_py3.9.18_cxx11 clhep/2.4.6.4",
+]
+
+
+def getID(user_event_file):
+    return user_event_file.split("-")[0][1:]
+
+
+def get_description(user_event_file):
+    return user_event_file.split("-")[1][:-3]
+
+
+def get_run_number(file_path, data=True):
+    if data:
+        pattern = r"uDST_([0-9]+).*"
+    else:
+        pattern = r".*r([0-9]+).*"
+    match = re.search(pattern, file_path)
+    if match:
+        return match.group(1)
+    return None
+
+
+def create_symlink(user_event_file):
+    symlink_path = os.path.join(phast_dir, "user", user_event_file)
+    target_path = os.path.join(ue_path, user_event_file)
+    if not os.path.exists(symlink_path):
+        subprocess.call(["ln", "-s", target_path, symlink_path])
+        print(f"Created symlink: {symlink_path} -> {target_path}")
+    else:
+        print(f"Symlink already exists: {symlink_path} -> {target_path}")
+
+
+def get_files_matching_pattern(directory, pattern):
+    file_paths = []
+    for filename in os.listdir(directory):
+        match = re.search(pattern, filename)
+        if match:
+            file_path = os.path.join(directory, filename)
+            file_paths.append(file_path)
+    return file_paths
+
+
+def create_file_lists(directory, list_path, run_name=None, week=""):
+    print(f"Directory: {directory}")
+    creation_counter = 0
+    existing_counter = 0
+
+    lists_file_paths = []
+
+    if run_name is not None:
+        files = get_files_matching_pattern(directory, f"phast.*{run_name}")
+        for i, file_path in enumerate(files):
+            file_id = os.path.basename(file_path).split(".")[0]
+            output_file = os.path.join(list_path, f"{file_id}.lst")
+            if not os.path.exists(output_file):
+                with open(output_file, "w", encoding="utf-8") as f_out:
+                    f_out.write(file_path + "\n")
+                creation_counter += 1
+            else:
+                existing_counter += 1
+            lists_file_paths.append(output_file)
+    else:
+        files = os.listdir(directory)
+        files = [os.path.join(directory, f) for f in files]
+
+        run_groups = {}
+        for file_path in files:
+            run_number = get_run_number(file_path)
+            if run_number is not None:
+                run_groups.setdefault(run_number, []).append(file_path)
+
+        for i, (run_number, file_paths) in enumerate(run_groups.items()):
+            output_file = os.path.join(list_path, f"r{run_number}-{week}.lst")
+            if not os.path.exists(output_file):
+                with open(output_file, "w", encoding="utf-8") as f_out:
+                    for file_path in file_paths:
+                        f_out.write(file_path + "\n")
+                creation_counter += 1
+            else:
+                existing_counter += 1
+            lists_file_paths.append(output_file)
+    print(
+        f"Lists: \tcreated = {creation_counter}\n\t"
+        + f"existing = {existing_counter}\n\t"
+        + f"TOTAL = {creation_counter+existing_counter}"
+    )
+    return lists_file_paths
+
+
+def split_file(input_file, num_files_max=5):
+    with open(input_file, "r") as f:
+        lines = f.readlines()
+
+    num_lines = len(lines)
+    num_files = int((num_lines + num_files_max - 1) / num_files_max)
+
+    for i in range(num_files):
+        start = i * num_files_max
+        end = (i + 1) * num_files_max
+        file_name = f"{input_file[:-4]}_{i + 1}.lst"
+
+        with open(file_name, "w", encoding="utf-8") as f_out:
+            f_out.writelines(lines[start:end])
+
+
+def recompile_phast(directory):
+    print("\nCompiling phast...")
+    os.chdir(directory)
+    command = ["make"]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+        output = result.stdout
+        if len(output) > 0:
+            print(f"\n{output}")
+        print("\nSuccesful compilation :)\n")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"{e}\n{e.stdout}")
+        print("\nDid not compile :(\n")
+        return False
+
+
+def run_phast_list(user_event_id, list_path, output_path):
+    subprocess.call(
+        [
+            os.path.join(phast_dir, "phast"),
+            "-u",
+            user_event_id,
+            "-l",
+            list_path,
+            "-h",
+            output_path,
+        ]
+    )
+
+
+def run_phast_batch(user_event_id, lists, output_path, run_name=None):
+    config_file = os.path.join(paths["home"], ".batchelorrc_io")
+    if run_name is not None:
+        config_file = os.path.join(paths["home"], ".batchelorrc_short")
+
+    bh = batchelor.BatchelorHandler(configfile=config_file, check_job_success=True)
+    bh.collectJobsIfPossible()
+    log_path = os.path.join(output_path, ".log")
+    for i, file in enumerate(lists):
+        job_name = f"ue{user_event_id}_{i+1}"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        log_file = os.path.join(log_path, f"{timestamp}_{job_name}.log")
+        if not os.path.exists(log_file):
+            with open(log_file, "w") as f:
+                pass
+
+        output_file = os.path.join(output_path, f"u{user_event_id}-")
+        if run_name is not None:
+            output_file += f"{os.path.basename(file).split('.')[0]}.root"
+        else:
+            output_file += f"r{get_run_number(file, data=False)}.root"
+
+        command = [
+            "echo 'Start: ' $(date)",
+            "echo 'Host: ' $(hostname)",
+            "echo 'User: ' $(whoami)",
+        ]
+        command.extend(environment)
+        phast_command = (
+            f"{os.path.join(phast_dir, 'phast')} -u {user_event_id}"
+            + f" -l {file}"
+            + f" -h {output_file}"
+        )
+        command.append(phast_command)
+        command = [line + " && " for line in command]
+        command.append("echo 'End: '$(date)")
+        command_str = "".join(command)
+        bh.submitJob(command_str, output=log_file, jobName=job_name)
+    bh.submitCollectedJobsInArray(jobName=f"ue{user_event_id}")
+    bh.wait()
+    bh.checkJobStates()
+
+
+def run_multiprocess(function, iterable_map, desc, unit, output_path, simulated=False):
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        results = list(
+            process_map(
+                function,
+                iterable_map,
+                total=len(iterable_map),
+                desc=desc,
+                unit=unit,
+                chunksize=1,
+            )
+        )
+
+    failed_runs = []
+    for i, (_, _, failed_run) in enumerate(results):
+        if failed_run:
+            if simulated:
+                failed_run_name = os.path.basename(iterable_map[i][1]).split(".")[0]
+            else:
+                failed_run_name = get_run_number(os.path.basename(iterable_map[i][1]))
+            failed_runs.append(failed_run_name)
+    if len(failed_runs) > 0:
+        print("failed_runs:")
+        if simulated:
+            for failed_run_name in failed_runs:
+                print(f"{failed_run_name}")
+        else:
+            print(f"{failed_runs}")
+
+    timestamps = [result[0] for result in results]
+    outputs = [result[1] for result in results]
+    for i, (_, list_path, _) in enumerate(iterable_map):
+        process_name = os.path.basename(list_path).split(".")[0]
+        timestamp = timestamps[i]
+        command_output = outputs[i]
+        write_log(
+            f"{function.__name__}-{process_name}",
+            timestamp,
+            command_output,
+            output_path,
+        )
+
+
+def write_log(process, timestamp, command_output, output_path):
+    log_file = os.path.join(output_path, ".log", timestamp + f"-{process}.log")
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(command_output)
+
+
+def run_Phast(command_info):
+    user_event_id, list_path, output_file_path = command_info
+    phast_command = (
+        f"{os.path.join(phast_dir, 'phast')} -u {user_event_id}"
+        + f" -l {list_path}"
+        + f" -h {output_file_path}"
+    )
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    failed_run = False
+    try:
+        result = subprocess.run(
+            phast_command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+        command_output = f"{result.stdout}"
+    except subprocess.CalledProcessError as e:
+        command_output = f"{e.stdout}"
+        failed_run = True
+    except Exception as e:
+        command_output = str(e)
+        failed_run = True
+
+    result = [timestamp, command_output, failed_run]
+    return result
+
+
+def build_command_info(user_event_id, list_paths, simulated=False):
+    if simulated:
+        output_file_start = os.path.join(mc_output_path, f"u{user_event_id}")
+        output_file_paths = [
+            f"{output_file_start + os.path.basename(list_path).split('.')[0]}.root"
+            for list_path in list_paths
+        ]
+    else:
+        output_file_start = os.path.join(rd_output_path, f"u{user_event_id}")
+        output_file_paths = [
+            f"{output_file_start}-{i+1}.root" for i in range(len(list_paths))
+        ]
+
+    command_info = [
+        (user_event_id, list_path, output_file_path)
+        for list_path, output_file_path in zip(list_paths, output_file_paths)
+    ]
+    return command_info
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compile phast with new user story and run it"
+    )
+
+    parser.add_argument(
+        "-b", "--batch", action="store_true", help="Compute using a cluster"
+    )
+    parser.add_argument(
+        "-u",
+        "--user_event_file",
+        type=str,
+        help="User event file (e.g. u<id>-description.cc)",
+    )
+    parser.add_argument(
+        "-s",
+        "--simulated_run_name",
+        type=str,
+        help="Name of the simulated run",
+    )
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-l", "--list_path", type=str, help="Path to the list file")
+    group.add_argument(
+        "-d", "--directory", type=str, help="Directory with data to be processed"
+    )
+
+    args = parser.parse_args()
+
+    print("\n========================= Rune ===============================\n")
+
+    create_symlink(args.user_event_file)
+    compiled = recompile_phast(phast_dir)
+
+    if compiled:
+        user_event_id = getID(args.user_event_file)
+        user_event_description = get_description(args.user_event_file)
+
+        lst_files = []
+        if args.simulated_run_name is not None:
+            lst_files.extend(
+                create_file_lists(
+                    mc_input_path, mc_list_path, run_name=f"{args.simulated_run_name}_"
+                )
+            )
+            output_file_start = os.path.join(mc_output_path, f"u{user_event_id}")
+        else:
+            output_file_start = os.path.join(rd_output_path, f"u{user_event_id}")
+
+        if args.directory is not None:
+            lst_files.extend(
+                create_file_lists(
+                    os.path.join(paths["datadir"], args.directory), rd_list_path
+                )
+            )
+        elif (
+            args.directory is None
+            and args.list_path is None
+            and args.simulated_run_name is None
+        ):
+            dirs = []
+            for item in os.listdir(paths["datadir"]):
+                if os.path.isdir(
+                    os.path.join(paths["datadir"], item)
+                ) and item.startswith("2012_W"):
+                    dirs.append(os.path.join(paths["datadir"], item))
+            for d in dirs:
+                dir_name = os.path.basename(d)
+                lst_files.extend(create_file_lists(d, rd_list_path, week=f"{dir_name}"))
+
+        if args.batch:
+            print("\n--> Rune BATCH MODE \n")
+            if args.simulated_run_name is not None:
+                print(f"Run name: {args.simulated_run_name}")
+                run_phast_batch(
+                    user_event_id,
+                    lst_files,
+                    mc_output_path,
+                    run_name=args.simulated_run_name,
+                )
+            else:
+                print(
+                    f"Running event {user_event_id} on {len(lst_files)} files and outputing into {rd_output_path}"
+                )
+                run_phast_batch(user_event_id, lst_files, rd_output_path)
+        elif args.directory is not None:
+            print("\n--> Rune DIRECTORY MODE \n")
+            directory = os.path.join(paths["datadir"], args.directory)
+            print(f"\tUser event: {user_event_id}\n\tDirectory: {directory}")
+            command_info = build_command_info(user_event_id, lst_files)
+            run_multiprocess(
+                run_Phast,
+                command_info,
+                desc="Processing real data with Phast",
+                unit="mDST",
+                output_path=rd_output_path,
+            )
+
+        elif args.list_path is not None:
+            print("\n--> Rune SINGLE MODE \n")
+            lst_file = os.path.join(ue_path, args.list_path)
+            run_number = get_run_number(lst_file, data=False)
+            if run_number is not None:
+                output_file = output_file_start + f"-r{run_number}-single.root"
+            else:
+                output_file = output_file_start + f"-{user_event_description}.root"
+            run_phast_list(user_event_id, lst_file, output_file)
+        elif args.simulated_run_name is not None:
+            print("\n--> Rune SIMULATION PROCESSING MODE \n")
+            print(f"Run name: {args.simulated_run_name}")
+            command_info = build_command_info(user_event_id, lst_files, simulated=True)
+            run_multiprocess(
+                run_Phast,
+                command_info,
+                desc="Processing simulated run with Phast",
+                unit="mDST",
+                output_path=mc_output_path,
+                simulated=True,
+            )
+        else:
+            print("\n--> Rune ALL REAL DATA MODE \n")
+            command_info = build_command_info(user_event_id, lst_files)
+            run_multiprocess(
+                run_Phast,
+                command_info,
+                desc="Processing real data with Phast",
+                unit="mDST",
+                output_path=rd_output_path,
+            )
+
+        print(f"Ran user event {user_event_id}: {user_event_description}")
+
+    print("\n========================= Rune ===============================\n")
+
+
+if __name__ == "__main__":
+    main()
