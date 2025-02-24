@@ -37,8 +37,7 @@ def notify_volume(volume, muted=False):
 
     message = f"󰸈 Volume muted" if muted or volume == 0 else f"󰕾 Volume: {volume}%"
     subprocess.run(
-        f"dunstify -a volumectl -u low -r 9993 "
-        f'-h int:value:{volume} "{message}" -t 2000',
+        f'notify-send -a volumectl -u low -r 9993 -h int:value:{volume} "{message}" -t 2000',
         shell=True,
     )
 

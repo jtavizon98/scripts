@@ -21,7 +21,7 @@ def get_brightness():
 def notify_brightness(level):
     """Show desktop notification with brightness level"""
     subprocess.run(
-        f"dunstify -a xbacklight -u low -r 9994 "
+        f"notify-send -a pylight -u low -r 9994 "
         f'-h int:value:{level} "󰃟  Brightness: {level}%" -t 2000',
         shell=True,
     )
