@@ -54,7 +54,7 @@ def main():
         "-s", "--set", type=int, metavar="0-100", help="Set specific volume level"
     )
     group.add_argument(
-        "-t", "--toggle-mute", action="store_true", help="Toggle audio mute"
+        "-m", "--mute_toggle", action="store_true", help="Toggle audio mute"
     )
 
     args = parser.parse_args()
@@ -86,7 +86,7 @@ def main():
                 check=True,
             )
 
-        elif args.toggle_mute:
+        elif args.mute_toggle:
             subprocess.run(
                 "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", shell=True, check=True
             )
